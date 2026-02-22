@@ -29,7 +29,7 @@ def simple(input_string: str) -> str:
     return input_string.split('-')[0].strip().split('(')[0].strip().split('[')[0].strip()
 
 def isrc_match(tidal_track: tidalapi.Track, spotify_track) -> bool:
-    if "isrc" in spotify_track["external_ids"]:
+    if "external_ids" in spotify_track and "isrc" in spotify_track["external_ids"]:
         return tidal_track.isrc == spotify_track["external_ids"]["isrc"]
     return False
 
@@ -122,6 +122,8 @@ async def tidal_search(spotify_track, rate_limiter, tidal_session: tidalapi.Sess
             if match(track, spotify_track):
                 failure_cache.remove_match_failure(spotify_track['id'])
                 return track
+    artist_name = spotify_track['artists'][0]['name'] if spotify_track.get('artists') else '?'
+    print(f"  Searching: {artist_name} - {spotify_track.get('name', '?')}")
     await rate_limiter.acquire()
     album_search = await asyncio.to_thread( _search_for_track_in_album )
     if album_search:
@@ -158,10 +160,30 @@ async def repeat_on_request_error(function, *args, remaining=5, **kwargs):
         return await repeat_on_request_error(function, *args, remaining=remaining-1, **kwargs)
 
 
+def _extract_tracks_from_items(items: list) -> List[dict]:
+    """Extract tracks from API response items, handling both old ({'track': ...}) and new ({'item': ...}) formats."""
+    output = []
+    for item in items:
+        if item is None:
+            continue
+        if 'track' in item and isinstance(item['track'], dict) and item['track'] is not None:
+            output.append(item['track'])
+        elif 'item' in item and isinstance(item['item'], dict) and item['item'] is not None:
+            output.append(item['item'])
+    return output
+
 async def _fetch_all_from_spotify_in_chunks(fetch_function: Callable) -> List[dict]:
     output = []
     results = fetch_function(0)
-    output.extend([item['track'] for item in results['items'] if item['track'] is not None])
+    print(f"  API response keys: {list(results.keys())}")
+    print(f"  Total: {results.get('total', '?')}, Limit: {results.get('limit', '?')}, Items count: {len(results.get('items', []))}")
+    if results.get('items'):
+        first = results['items'][0]
+        print(f"  First item keys: {list(first.keys()) if isinstance(first, dict) else type(first)}")
+        import json
+        print(f"  First item preview: {json.dumps(first, default=str)[:500]}")
+    output.extend(_extract_tracks_from_items(results['items']))
+    print(f"  Extracted {len(output)} tracks from first batch")
 
     # Get all the remaining tracks in parallel
     if results['next']:
@@ -171,15 +193,15 @@ async def _fetch_all_from_spotify_in_chunks(fetch_function: Callable) -> List[di
             desc="Fetching additional data chunks"
         )
         for extra_result in extra_results:
-            output.extend([item['track'] for item in extra_result['items'] if item['track'] is not None])
+            output.extend(_extract_tracks_from_items(extra_result['items']))
 
     return output
 
 
 async def get_tracks_from_spotify_playlist(spotify_session: spotipy.Spotify, spotify_playlist):
     def _get_tracks_from_spotify_playlist(offset: int, playlist_id: str):
-        fields = "next,total,limit,items(track(name,album(name,artists),artists,track_number,duration_ms,id,external_ids(isrc))),type"
-        return spotify_session.playlist_tracks(playlist_id=playlist_id, fields=fields, offset=offset)
+        fields = "next,total,limit,items(track(name,album(name,artists),artists,track_number,duration_ms,id)),type"
+        return spotify_session.playlist_items(playlist_id=playlist_id, offset=offset)
 
     print(f"Loading tracks from Spotify playlist '{spotify_playlist['name']}'")
     items = await repeat_on_request_error( _fetch_all_from_spotify_in_chunks, lambda offset: _get_tracks_from_spotify_playlist(offset=offset, playlist_id=spotify_playlist["id"]))
