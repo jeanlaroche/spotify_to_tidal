@@ -5,8 +5,11 @@ Installation
 Clone this git repository and then run:
 
 ```bash
-python3 -m pip install -e .
+uv sync --python 3.10
+source .venv/bin/activate
 ```
+
+This creates a virtual environment with Python 3.10, installs all dependencies, and activates the environment.
 
 Setup
 -----
@@ -18,8 +21,52 @@ Setup
 
 Usage
 ----
-To synchronize all of your Spotify playlists with your Tidal account run the following from the project root directory
-Windows ignores python module paths by default, but you can run them using `python3 -m spotify_to_tidal`
+
+### Listing playlists
+
+Start by listing all your Spotify playlists with their IDs:
+
+```bash
+spotify_to_tidal --list
+```
+
+### Exporting playlists to JSON
+
+Export all your Spotify playlists and liked songs to JSON files in an `export/` directory. This is the recommended approach: you only need to fetch from Spotify once, and subsequent syncs to Tidal use the local files, so you don't risk running into Spotify's rate limits:
+
+```bash
+spotify_to_tidal --export
+```
+
+To export only liked songs (without fetching all playlists):
+
+```bash
+python export_liked.py
+```
+
+### Syncing from exported JSON files
+
+Sync to Tidal using previously exported JSON files instead of querying Spotify. This only requires a Tidal session:
+
+```bash
+# Sync all exported playlists
+spotify_to_tidal --from-export
+
+# Sync specific files
+spotify_to_tidal --from-export export/MyPlaylist.json export/_Liked_Songs.json
+```
+
+### Match report and suspicious matches
+
+After syncing, a match report shows how tracks were matched (by ISRC or fuzzy name/artist matching). To only display fuzzy matches where the artist or title actually differ (ignoring case, punctuation, etc.):
+
+```bash
+spotify_to_tidal --from-export --suspicious-only
+```
+
+### Direct sync (without exporting first)
+
+To synchronize all of your Spotify playlists directly with your Tidal account:
 
 ```bash
 spotify_to_tidal

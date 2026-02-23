@@ -12,10 +12,52 @@ def main():
     parser.add_argument('--sync-favorites', action=argparse.BooleanOptionalAction, help='synchronize the favorites')
     parser.add_argument('--list', action='store_true', help='list all Spotify playlists with their URIs')
     parser.add_argument('--export', action='store_true', help='export all Spotify playlists to JSON files in an export/ directory')
+    parser.add_argument('--from-export', nargs='*', metavar='FILE', help='sync to Tidal from exported JSON files instead of Spotify. If no files specified, uses all JSON files in export/')
+    parser.add_argument('--suspicious-only', action='store_true', help='in match report, only show fuzzy matches where artist/title actually differ')
     args = parser.parse_args()
 
     with open(args.config, 'r') as f:
         config = yaml.safe_load(f)
+    config['suspicious_only'] = args.suspicious_only
+
+    if args.from_export is not None:
+        import asyncio
+        import json
+        import glob
+        import os
+
+        # Collect JSON files
+        if args.from_export:
+            json_files = args.from_export
+        else:
+            json_files = sorted(glob.glob('export/*.json'))
+        if not json_files:
+            sys.exit("No JSON files found. Run --export first.")
+
+        print("Opening Tidal session")
+        tidal_session = _auth.open_tidal_session()
+        if not tidal_session.check_login():
+            sys.exit("Could not connect to Tidal")
+        tidal_playlists = _sync.get_tidal_playlists_wrapper(tidal_session)
+
+        print(f"\nSyncing {len(json_files)} playlists from export files\n")
+        for filepath in json_files:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            playlist_name = data['playlist_name']
+            description = data.get('description', '')
+            tracks = data['tracks']
+            print(f"  {playlist_name} ({len(tracks)} tracks) from {os.path.basename(filepath)}")
+
+            # Build a fake spotify_playlist dict with what sync_playlist needs
+            spotify_playlist = {'name': playlist_name, 'description': description, 'id': data.get('playlist_id', '')}
+            tidal_playlist = tidal_playlists.get(playlist_name, None)
+
+            asyncio.run(_sync.sync_playlist_from_tracks(tidal_session, spotify_playlist, tidal_playlist, tracks, config))
+
+        print("\nDone!")
+        sys.exit(0)
+
     print("Opening Spotify session")
     spotify_session = _auth.open_spotify_session(config['spotify'])
     print("Opening Tidal session")
@@ -53,7 +95,26 @@ def main():
                 with open(filename, 'w', encoding='utf-8') as f:
                     json.dump(export_data, f, indent=2, ensure_ascii=False, default=str)
                 print(f"  {i:3d}. {p['name']} ({len(tracks)} tracks) -> {filename}")
-            print(f"\nDone! Exported {len(playlists)} playlists.")
+
+            # Export liked songs
+            print(f"\nExporting liked songs...")
+            _get_favorites = lambda offset: spotify_session.current_user_saved_tracks(offset=offset)
+            favorites = asyncio.run(_sync._fetch_all_from_spotify_in_chunks(_get_favorites))
+            favorites.reverse()
+            filename = os.path.join(export_dir, "_Liked_Songs.json")
+            export_data = {
+                'playlist_name': 'Liked Songs',
+                'playlist_id': '_liked_songs',
+                'playlist_uri': '',
+                'description': 'Liked/saved tracks',
+                'total_tracks': len(favorites),
+                'tracks': favorites,
+            }
+            with open(filename, 'w', encoding='utf-8') as f:
+                json.dump(export_data, f, indent=2, ensure_ascii=False, default=str)
+            print(f"  Liked Songs ({len(favorites)} tracks) -> {filename}")
+
+            print(f"\nDone! Exported {len(playlists)} playlists + liked songs.")
             sys.exit(0)
     if args.uri:
         # if a playlist ID is explicitly provided as a command line argument then use that
